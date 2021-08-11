@@ -32,7 +32,7 @@ std::vector <double> FileInput::open_file(const char filename[]){
     }
     int audio_stream_index = -1;
 
-    LOGE("opening the input file (%s) and loading format (container) header", filename);
+    //LOGE("opening the input file (%s) and loading format (container) header", filename);
 
     if (avformat_open_input(&fileFormatContext, filename, nullptr, nullptr) != 0) {
         LOGE("ERROR could not open the file");
@@ -41,8 +41,8 @@ std::vector <double> FileInput::open_file(const char filename[]){
     // now we have access to some information about our file
     // since we read its header we can say what format (container) it's
     // and some other information related to the format itself.
-    LOGE("format %s, duration %ld us, bit_rate %ld", fileFormatContext->iformat->name, fileFormatContext->duration, fileFormatContext->bit_rate);
-    LOGE("finding stream info from format");
+    //LOGE("format %s, duration %ld us, bit_rate %ld", fileFormatContext->iformat->name, fileFormatContext->duration, fileFormatContext->bit_rate);
+    //LOGE("finding stream info from format");
 
     if (avformat_find_stream_info(fileFormatContext, nullptr) < 0) {
         LOGE("ERROR could not get the stream info");
@@ -55,7 +55,7 @@ std::vector <double> FileInput::open_file(const char filename[]){
         pLocalCodecParameters = fileFormatContext->streams[i]->codecpar;
 
 
-        LOGE("finding the proper decoder (CODEC)");
+        //LOGE("finding the proper decoder (CODEC)");
 
         AVCodec *pLocalCodec = nullptr;
 
@@ -76,7 +76,7 @@ std::vector <double> FileInput::open_file(const char filename[]){
                 fileCodecParameters = pLocalCodecParameters;
             }
             // print its name, id and bitrate
-            LOGE("\tCodec %s ID %d bit_rate %ld", pLocalCodec->name, pLocalCodec->id, fileCodecParameters->bit_rate);
+            //LOGE("\tCodec %s ID %d bit_rate %ld", pLocalCodec->name, pLocalCodec->id, fileCodecParameters->bit_rate);
             break;
         }
     }
@@ -102,7 +102,7 @@ std::vector <double> FileInput::open_file(const char filename[]){
     }
 
     //setup conversion from sample format to interleaved signed 16 - bit integer,
-    //downsampling from 48kHz to 16.0kHz and downmixing to mono
+    //downsampling to 16.0kHz and downmixing to mono
     SwrContext *swr = swr_alloc();
     av_opt_set_int(swr, "in_channel_count", fileCodecContext->channels, 0);
     av_opt_set_int(swr, "out_channel_count", 1, 0);
@@ -120,7 +120,7 @@ std::vector <double> FileInput::open_file(const char filename[]){
         return {};
     }
 
-    LOGE("File opened! Channels: %d", fileCodecContext->channels);
+    //LOGE("File opened! Channels: %d", fileCodecContext->channels);
 
     std::vector <double> data;
 
@@ -187,5 +187,171 @@ int FileInput::decode_packet(std::vector<double> &data, AVCodecContext *fileCode
         av_free(buffer);
     }
 
+    return 0;
+}
+int FileInput::createOutputFile(const char filename[]){
+    int ret = 0;
+
+    avformat_alloc_output_context2(&format_context, nullptr, nullptr, filename);
+    if (!format_context) {
+        LOGE("Could not create output context\n");
+        ret = AVERROR_UNKNOWN;
+        return AVERROR_UNKNOWN;
+    }
+
+    if (!(format_context->oformat->flags & AVFMT_NOFILE)) {
+        ret = avio_open(&format_context->pb, filename, AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            LOGE("Could not open output file '%s'",filename);
+            return ret;
+        }
+    }
+
+    if (!(format_context->oformat = av_guess_format(NULL, filename, NULL))) {
+        LOGE("Could not find output file format");
+    }
+
+    // Add the file pathname to the output context
+    if (!(format_context -> url = av_strdup(filename))) {
+        LOGE("Could not process file path name");
+    }
+
+    // Guess the encoder for the file
+    AVCodecID codec_id = av_guess_codec(
+            format_context -> oformat,
+            NULL,
+            filename,
+            NULL,
+            AVMEDIA_TYPE_AUDIO);
+
+    // Find an encoder based on the codec
+    AVCodec * output_codec;
+    if (!(output_codec = avcodec_find_encoder(codec_id))) {
+        LOGE("Could not open codec");
+    }
+
+    out_stream = avformat_new_stream(format_context, nullptr);
+    if (!out_stream) {
+        LOGE("Could not create new stream for output file\n");
+        return -1;
+    }
+    codec_context = NULL;
+    // Allocate an encoding context
+    if (!(codec_context = avcodec_alloc_context3(output_codec))) {
+        LOGE("Could not allocate an encoding context");
+    }
+    // Set the parameters of the stream
+    codec_context -> channels = 1;
+    codec_context -> channel_layout = av_get_default_channel_layout(1);
+    codec_context -> sample_rate = 16000;
+    codec_context -> sample_fmt = output_codec -> sample_fmts[0];
+    codec_context -> bit_rate = 256000;
+
+    // Set the sample rate of the container
+    out_stream -> time_base.den = 16000;
+    out_stream -> time_base.num = 1;
+    sample = 0;
+
+    // Add a global header if necessary
+    if (format_context -> oformat -> flags & AVFMT_GLOBALHEADER)
+        codec_context -> flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+    // Open the encoder for the audio stream to use
+    if ((avcodec_open2(codec_context, output_codec, NULL)) < 0) {
+        LOGE("Could not open output codec");
+    }
+    // Make sure everything has been initialized correctly
+    ret = avcodec_parameters_from_context(out_stream->codecpar, codec_context);
+    if (ret < 0) {
+        LOGE("Could not initialize stream parameters ");
+    }
+    ret = avformat_write_header(format_context, nullptr);
+    if (ret < 0) {
+        LOGE("Error occurred when opening output file\n");
+        return ret;
+    }
+    return 0;
+}
+
+int FileInput::writeData(std::vector<double> data) {
+    int ret = 0;
+    int bytes_per_sample = 2;
+
+    AVPacket *capturePacket = av_packet_alloc();
+
+    if (!capturePacket)
+    {
+        LOGE("failed to allocated memory for AVPacket");
+        return -1;
+    }
+
+    AVFrame *frame = av_frame_alloc();
+
+    if (!frame)
+    {
+        av_packet_unref(capturePacket);
+        LOGE("failed to allocated memory for AVFrame");
+        return -1;
+    }
+
+    size_t dst_nb_samples = data.size();
+    int16_t *dst_samples_data = (int16_t *)malloc(dst_nb_samples);
+    if (codec_context -> frame_size <= 0) {
+        codec_context -> frame_size = 8000;
+    }
+
+    frame -> pts = sample;
+
+    size_t dst_samples_size = dst_nb_samples * bytes_per_sample;
+    frame -> nb_samples     = codec_context -> frame_size;
+    frame -> channel_layout = codec_context -> channel_layout;
+    frame -> format         = codec_context -> sample_fmt;
+    frame -> sample_rate    = codec_context -> sample_rate;
+
+
+    for(size_t i = 0;i<dst_nb_samples;i++){
+        dst_samples_data[i] = (int16_t)(data[i]*32767);
+    }
+    // Allocate the samples in the frame
+    if (av_frame_get_buffer(frame, 0) < 0) {
+        LOGE("Could not allocate output frame samples");
+        av_frame_free(&frame);
+        av_packet_unref(capturePacket);
+        return -1;
+    }
+    // Construct a packet for the encoded frame
+    av_init_packet(capturePacket);
+    capturePacket->data = NULL;
+    capturePacket->size = 0;
+
+    avcodec_fill_audio_frame(frame, codec_context->channels, codec_context->sample_fmt,
+                             (const uint8_t *)dst_samples_data, dst_samples_size, 0);
+
+    // Send a frame to the encoder to encode
+    if ((ret = avcodec_send_frame(codec_context, frame)) < 0) {
+        LOGE("Could not send packet for encoding");
+        return -1;
+    }
+
+    // Receive the encoded frame from the encoder
+    while ((ret = avcodec_receive_packet(codec_context, capturePacket)) == 0) {
+        // Write the encoded frame to the file
+        if ((ret = av_interleaved_write_frame(format_context, capturePacket)) < 0) {
+            LOGE("Could not write frame");
+        }
+    }
+    sample += dst_nb_samples;
+    free(dst_samples_data);
+    av_frame_free(&frame);
+    av_packet_unref(capturePacket);
+    return 0;
+}
+
+int FileInput::closeOutputFile(){
+    av_write_trailer(format_context);
+    avcodec_close(codec_context);
+    avcodec_free_context(&codec_context);
+    avio_close(format_context->pb);
+    avformat_free_context(format_context);
     return 0;
 }
