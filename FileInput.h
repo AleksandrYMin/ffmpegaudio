@@ -30,20 +30,13 @@ public:
     int createOutputFile(const char filename[]);
     int closeOutputFile();
     int writeData(std::vector<double> data);
-    void write( const std::vector<std::vector<double>> & audio,
-                const std::string & filename,
-                double sample_rate);
+
 private:
     int decode_packet(std::vector<double> &data, AVCodecContext *fileCodecContext,AVPacket *filePacket, AVFrame *fileFrame, SwrContext *swr);
     AVStream *out_stream;
     AVFormatContext *format_context = NULL;
     AVCodecContext *codec_context;
     size_t sample;
-    void cleanup(AVCodecContext * codec_context,
-            AVFormatContext * format_context,
-            SwrContext * resample_context,
-            AVFrame * frame,
-            AVPacket packet);
 };
 
 
